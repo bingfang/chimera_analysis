@@ -1,0 +1,120 @@
+---
+title: "Filter vcf by VQSR and hard filter"
+author: "Bingfang Ruth Xu"
+date: "6/25/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Filter vcf by VQSR
+### Hard-filter a large raw_variants callset on ExcessHet using VariantFiltration
+not tested
+```
+gatk --java-options "-Xmx3g -Xms3g" VariantFiltration -V raw_variants.vcf.gz --filter-expression "ExcessHet > 54.69" --filter-name ExcessHet -O raw_variants_excesshet.vcf.gz
+```
+
+### Create sites-only VCF with MakeSitesOnlyVcf
+not tested
+```
+sinteractive --meme=32g
+module load GATK
+gatk MakeSitesOnlyVcf -I raw_variants_excesshet.vcf.gz -O raw_variants_sitesonly.vcf.gz
+gatk MakeSitesOnlyVcf -I raw_variants.vcf.gz -O raw_variants_sitesonly.vcf.gz
+```
+
+### Create sites-only VCF with MakeSitesOnlyVcf 
+
+```
+sinteractive --meme=32g
+module load picard
+java -jar $PICARDJARPATH/picard.jar MakeSitesOnlyVcf -INPUT raw_variants.vcf.gz -OUTPUT raw_variants_sitesonly.vcf.gz
+```
+
+### Calculate VQSLOD tranches for indels using VariantRecalibrator 
+
+```
+module load GATK
+gatk --java-options "-Xmx24g -Xms24g" VariantRecalibrator -V raw_variants_sitesonly.vcf.gz --trust-all-polymorphic -tranche 100.0 -tranche 99.95 -tranche 99.9 -tranche 99.5 -tranche 99.0 -tranche 97.0 -tranche 96.0 -tranche 95.0 -tranche 94.0 -tranche 93.5 -tranche 93.0 -tranche 92.0 -tranche 91.0 -tranche 90.0 -an FS -an ReadPosRankSum -an MQRankSum -an QD -an SOR -an DP -mode INDEL --max-gaussians 4 -resource:mills,known=false,training=true,truth=true,prior=12 Mills_and_1000G_gold_standard.indels.hg38.vcf.gz -resource:axiomPoly,known=false,training=true,truth=false,prior=10 Axiom_Exome_Plus.genotypes.all_populations.poly.hg38.vcf.gz -resource:dbsnp,known=true,training=false,truth=false,prior=2 Homo_sapiens_assembly38.dbsnp138.vcf.gz -O raw_variants_indels.recal --tranches-file raw_variants_indels.tranches
+```
+
+### Calculate VQSLOD tranches for SNPs using VariantRecalibrator
+write gatk line in snp.swarm, then run swarm file
+
+```
+
+nano snp.swarm
+swarm -f snp.swarm -t 6 -g 24
+
+module load GATK
+gatk --java-options "-Xmx24g -Xms24g" VariantRecalibrator -V raw_variants_sitesonly.vcf.gz --trust-all-polymorphic -tranche 100.0 -tranche 99.95 -tranche 99.9 -tranche 99.8 -tranche 99.6 -tranche 99.5 -tranche 99.4 -tranche 99.3 -tranche 99.0 -tranche 98.0 -tranche 97.0 -tranche 90.0 -an QD -an MQRankSum -an ReadPosRankSum -an FS -an MQ -an SOR -an DP -mode SNP --max-gaussians 6 -resource:hapmap,known=false,training=true,truth=true,prior=15 /fdb/GATK_resource_bundle/hg38/hapmap_3.3.hg38.vcf.gz -resource:omni,known=false,training=true,truth=true,prior=12 /fdb/GATK_resource_bundle/hg38/1000G_omni2.5.hg38.vcf.gz -resource:1000G,known=false,training=true,truth=false,prior=10 /fdb/GATK_resource_bundle/hg38/1000G_phase1.snps.high_confidence.hg38.vcf.gz -resource:dbsnp,known=true,training=false,truth=false,prior=7 Homo_sapiens_assembly38.dbsnp138.vcf.gz -O raw_variants_snps.recal --tranches-file raw_variants_snps.tranches
+```
+
+### Filter INDELs on VQSLOD using ApplyVQSR
+
+```
+gatk --java-options "-Xmx5g -Xms5g" ApplyVQSR -V raw_variants.vcf.gz --recal-file raw_variants_indels.recal --tranches-file raw_variants_indels.tranches  --truth-sensitivity-filter-level 99.7 --create-output-variant-index true -mode INDEL -O indel.recalibrated.vcf.gz
+```
+
+### Filter SNPs on VQSLOD using ApplyVQSR    
+
+```
+gatk --java-options "-Xmx5g -Xms5g" ApplyVQSR -V indel.recalibrated.vcf.gz --recal-file raw_variants_snps.recal --tranches-file raw_variants_snps.tranches --truth-sensitivity-filter-level 99.7 --create-output-variant-index true -mode SNP -O snp.recalibrated.vcf.gz
+```
+
+# Hard filering
+
+### Subset to SNPs-only and ondels-only callset with SelectVariants
+```
+gatk --java-options "-Xmx24g -Xms24g" SelectVariants -V raw_variants.vcf.gz -select-type SNP -O snps.vcf.gz
+
+gatk --java-options "-Xmx24g -Xms24g" SelectVariants -V raw_variants.vcf.gz -select-type INDEL -O indels.vcf.gz
+```
+
+### Hard-filter SNPs on multiple expressions using VariantFiltration
+
+```
+gatk VariantFiltration -V snps.vcf.gz -filter "QD < 2.0" --filter-name "QD2" -filter "QUAL < 30.0" --filter-name "QUAL30" -filter "SOR > 3.0" --filter-name "SOR3" -filter "FS > 60.0" --filter-name "FS60" -filter "MQ < 40.0" --filter-name "MQ40" -filter "MQRankSum < -12.5" --filter-name "MQRankSum-12.5"  -filter "ReadPosRankSum < -8.0" --filter-name "ReadPosRankSum-8" -O snps_filtered.vcf.gz
+```
+
+### Hard-filter indels on multiple expressions using VariantFiltration
+
+```
+gatk VariantFiltration -V indels.vcf.gz -filter "QD < 2.0" --filter-name "QD2" -filter "QUAL < 30.0" --filter-name "QUAL30"  -filter "FS > 200.0" --filter-name "FS200" -filter "ReadPosRankSum < -20.0" --filter-name "ReadPosRankSum-20" -O indels_filtered.vcf.gz
+```    
+
+# Evaluate the filtered callset
+
+### Compare callset against a known population callset using CollectVariantCallingMetrics
+```
+gatk CollectVariantCallingMetrics -I filtered.vcf.gz --DBSNP Homo_sapiens_assembly38.dbsnp138.vcf.gz -SD /fdb/GATK_resource_bundle/hg38/Homo_sapiens_assembly38.dict -O metrics 
+```    
+    
+### Compare callset against a known population callset using VariantEval 
+
+```
+java -jar gatk3.jar \
+    -T VariantEval \
+    -R Homo_sapiens_assembly38.fasta \
+    -eval cohort.vcf.gz \
+    -D Homo_sapiens_assembly38.dbsnp138.vcf \
+    -noEV \
+    -EV CompOverlap -EV IndelSummary -EV TiTvVariantEvaluator \
+    -EV CountVariants -EV MultiallelicSummary \
+    -o cohortEval.txt
+```   
+ 
+QualByDepth (QD)
+FisherStrand (FS)
+StrandOddsRatio (SOR)
+RMSMappingQuality (MQ)
+MappingQualityRankSumTest (MQRankSum)
+ReadPosRankSumTest (ReadPosRankSum)   
+    
+    
+    
+    
+    
+    
